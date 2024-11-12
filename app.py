@@ -14,11 +14,13 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.utils import resample
 import joblib
+import datetime
 from imblearn.over_sampling import SMOTE
+import streamlit_folium
 
 #---------------------------------Agregar logo en la parte superior de la barra lateral --------->
 logo_path = "cisa.png"
-banner_path = "unisimon.jpg"
+banner_path = "CiSaBanner.jpeg"
 
 st.sidebar.image(logo_path, use_container_width=True)
 st.image(banner_path, use_container_width=True)
@@ -26,34 +28,30 @@ st.image(banner_path, use_container_width=True)
 #---------------------------------Function to load data --------->
 @st.cache_data
 def load_data(file_path):
+    # Limpieza de datos
     df = pd.read_csv(file_path)
-    # Drop rows where 'ANO', 'MES', or 'DIA' are missing or invalid
     df = df.dropna(subset=['ANO', 'MES', 'DIA'])
-    # Convert columns to numeric, coercing errors and dropping rows with remaining issues
     df['year'] = pd.to_numeric(df['ANO'], errors='coerce')
     df['month'] = pd.to_numeric(df['MES'], errors='coerce')
     df['day'] = pd.to_numeric(df['DIA'], errors='coerce')
     df = df.dropna(subset=['ANO', 'MES', 'DIA'])
-    
-    # Ensure all components are integers and within valid ranges
     df['ANO'] = df['ANO'].astype(int)
     df['MES'] = df['MES'].clip(1, 12).astype(int)
     df['DIA'] = df['DIA'].clip(1, 31).astype(int)
     
-    # Create the date column and handle invalid dates
     df['date'] = pd.to_datetime(df[['year', 'month', 'day']], errors='coerce')
-    df = df.dropna(subset=['date'])  # Drop rows where the date could not be assembled
+    df = df.dropna(subset=['date']) 
     return df
 
-# Load data from provided file
+# Cargar datos (Actualmente de manera local)
 file_path = "delitosBucaramanga.csv"
 df = load_data(file_path)
 
 # Verificar si los datos se cargaron correctamente
 if df is not None and not df.empty:
-    #---------------------------------Crear pestañas para el resumen de datos --------->
+    #--------------------------------- Pestañas para el resumen de datos --------->
     st.header('Análisis Exploratorio de Datos')
-    tab1, tab2, tab3, tab4 = st.tabs(["Top 5 Filas", "Ubicaciones de Delitos", "Delitos por Día de la Semana", "Principales Tipos de Delitos"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Top 5 Filas", "Ubicaciones de Delitos", "Delitos por Día de la Semana", "Principales Tipos de Delitos", "Delitos a lo Largo del Tiempo:"])
 
     with tab1:
         st.write("Top 5 filas del conjunto de datos:")
@@ -79,12 +77,20 @@ if df is not None and not df.empty:
         top_crimes.columns = ['Conducta', 'Conteo']
         fig = px.bar(top_crimes, x='Conducta', y='Conteo', title='Top 5 Tipos de Delitos')
         st.plotly_chart(fig, key='crime_types_plot')
+    
+    with tab5:
+        st.write("Delitos a lo Largo del Tiempo:")
+        crime_over_time = df['date'].value_counts().reset_index()
+        crime_over_time.columns = ['Fecha', 'Cantidad de Delitos']
+        crime_over_time = crime_over_time.sort_values('Fecha')
+        fig = px.line(crime_over_time, x='Fecha', y='Cantidad de Delitos', title='Cantidad de Delitos a lo Largo del Tiempo')
+        st.plotly_chart(fig, key='crime_over_time_plot')
 
     #---------------------------------Agregar Visualización Geoespacial --------->
     # Opciones de Visualización
     st.sidebar.header('Visualización Geoespacial')
     map_type = st.sidebar.selectbox('Seleccionar Tipo de Mapa', ['Dispersión', 'Mapa de Calor'], key='map_type')
-    year_filter = st.sidebar.slider('Seleccionar Año', min_value=int(df['ANO'].min()), max_value=2030, value=(int(df['ANO'].min()), int(df['ANO'].max())), key='year_filter')
+    year_filter = st.sidebar.slider('Seleccionar Año', min_value=int(df['ANO'].min()), max_value=2021, value=(int(df['ANO'].min()), int(df['ANO'].max())), key='year_filter')
     month_filter = st.sidebar.slider('Seleccionar Mes', min_value=1, max_value=12, value=(1, 12), key='month_filter')
 
     # Filtrar datos según el año y mes seleccionados
@@ -110,13 +116,19 @@ if df is not None and not df.empty:
     st.sidebar.header('Filtrar Datos Avanzado')
     crime_type = st.sidebar.multiselect('Seleccionar Tipo de Delito', df['CONDUCTA'].unique(), default=None, key='crime_type')
     selected_barrio = st.sidebar.multiselect('Seleccionar Barrio', df['BARRIOS_HECHO'].unique(), default=None, key='selected_barrio')
+    selected_ano = st.sidebar.multiselect('Seleccionar Año', df['ANO'].unique(), default=None, key='selected_ano')
+    selected_mes = st.sidebar.multiselect('Seleccionar Mes', df['MES'].unique(), default=None, key='selected_mes')
 
-    if crime_type or selected_barrio:
+    if crime_type or selected_barrio or selected_ano or selected_mes:
         filtered_df = filtered_df.copy()
         if crime_type:
             filtered_df = filtered_df[filtered_df['CONDUCTA'].isin(crime_type)]
         if selected_barrio:
             filtered_df = filtered_df[filtered_df['BARRIOS_HECHO'].isin(selected_barrio)]
+        if selected_ano:
+            filtered_df = filtered_df[filtered_df['ANO'].isin(selected_ano)]
+        if selected_mes:
+            filtered_df = filtered_df[filtered_df['MES'].isin(selected_mes)]
         st.write("Datos Filtrados:")
         st.dataframe(filtered_df)
 
@@ -138,11 +150,9 @@ if df is not None and not df.empty:
     le_conducta = LabelEncoder()
     df['CONDUCTA_ENCODED'] = le_conducta.fit_transform(df['CONDUCTA'])
 
-    # Definir características y objetivo
     X = df[['LATITUD', 'LONGITUD', 'ANO', 'MES', 'DIA']]
     y = df['CONDUCTA_ENCODED']
 
-    # Dividir los datos
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
     # Balanceo de clases con SMOTE si es posible
@@ -158,7 +168,7 @@ if df is not None and not df.empty:
     else:
         X_train_resampled, y_train_resampled = X_train, y_train
 
-    # Entrenar el modelo con hiperparámetros optimizados
+    # Entrenamiento modelo
     if st.sidebar.button('Entrenar Modelo', key='train_model_button'):
         param_grid = {
             'n_estimators': [100, 200, 300],
@@ -194,22 +204,26 @@ if df is not None and not df.empty:
     if 'input_long' not in st.session_state:
         st.session_state.input_long = float(df['LONGITUD'].mean())
     if 'input_ano' not in st.session_state:
-        st.session_state.input_ano = 2022  # Permitir predicción para años futuros
+        st.session_state.input_ano = 2022  
     if 'input_mes' not in st.session_state:
         st.session_state.input_mes = 1
     if 'input_dia' not in st.session_state:
         st.session_state.input_dia = 1
 
-    # Agregar mapa para seleccionar latitud y longitud
+    # Agregar mapa
     st.write("Haz clic en el mapa para seleccionar la Latitud y Longitud para la predicción:")
     def update_location(lat, lon):
         st.session_state.input_lat = lat
         st.session_state.input_long = lon
 
     if 'marker' not in st.session_state:
-        st.session_state.marker = [st.session_state.input_lat, st.session_state.input_long]
+        st.session_state.marker = [float(df['LATITUD'].mean()), float(df['LONGITUD'].mean())]
 
-    m = folium.Map(location=[st.session_state.marker[0], st.session_state.marker[1]], zoom_start=12)
+
+    def update_location(lat, lon):
+        st.session_state.marker = [lat, lon]
+
+    m = folium.Map(location=st.session_state.marker, zoom_start=12)
     marker = folium.Marker(
         location=st.session_state.marker,
         draggable=True
@@ -217,14 +231,13 @@ if df is not None and not df.empty:
     marker.add_child(folium.Popup('Mover el marcador para actualizar la ubicación'))
     m.add_child(marker)
 
-    # Mostrar el mapa y capturar la ubicación actualizada
-    def on_map_click(e):
-        st.session_state.marker = [e.latlng[0], e.latlng[1]]
-        update_location(e.latlng[0], e.latlng[1])
-        print(f"Nueva ubicación seleccionada: Latitud {e.latlng[0]}, Longitud {e.latlng[1]}")
+    folium_map = streamlit_folium.st_folium(m, key="map", width=700, height=400)
 
-    m.add_child(folium.ClickForMarker(popup='Click para seleccionar ubicación').add_to(m))
-    folium_static(m)
+    # Obtener la ubicación del clic desde el mapa de streamlit_folium
+    if folium_map['last_object_clicked'] is not None:
+        last_clicked = folium_map['last_object_clicked']
+        update_location(last_clicked['lat'], last_clicked['lng'])
+        print(f"Nueva ubicación seleccionada: Latitud {last_clicked['lat']}, Longitud {last_clicked['lng']}")
 
     # Actualizar los valores de latitud y longitud con la ubicación seleccionada en el mapa
     input_lat = st.session_state.marker[0]
@@ -240,12 +253,16 @@ if df is not None and not df.empty:
         prediction = best_model.predict(input_data)
         predicted_conducta = le_conducta.inverse_transform(prediction)
         st.write(f'Tipo de Delito Predicho: {predicted_conducta[0]}')
+        print(f'Tipo de Delito Predicho: {predicted_conducta[0]}')
 
     #---------------------------------Generar Datos Futuros de Delitos para Mapa de Calor --------->
     st.sidebar.header('Generar Datos de Delitos Futuros')
+    start_date = st.sidebar.date_input("Fecha de inicio", datetime.date(2023, 1, 1))
+    end_date = st.sidebar.date_input("Fecha de fin", datetime.date(2030, 12, 31))
+
     if st.sidebar.button('Generar Datos Futuros', key='generate_future_data_button'):
-        best_model = joblib.load('crime_prediction_model.pkl')  # Cargar el modelo entrenado aquí para evitar NameError
-        future_dates = pd.date_range(start='2023-01-01', end='2030-12-31', freq='M')
+        best_model = joblib.load('crime_prediction_model.pkl')  
+        future_dates = pd.date_range(start=start_date, end=end_date, freq='M')
         future_data = []
         for date in future_dates:
             # Seleccionar aleatoriamente latitud, longitud y tipo de delito del historial de datos para la predicción futura
